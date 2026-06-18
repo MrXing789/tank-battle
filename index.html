@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>坦克大战 - Tank Battle</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: #1a1a1a;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    h1 {
+      margin-bottom: 10px;
+      font-size: 28px;
+      letter-spacing: 2px;
+      color: #ffcc00;
+      text-shadow: 0 0 10px rgba(255, 204, 0, 0.5);
+    }
+    #gameInfo {
+      display: flex;
+      gap: 30px;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+    #gameInfo span {
+      color: #00ff88;
+    }
+    #gameCanvas {
+      border: 3px solid #444;
+      background: #0d0d0d;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+    }
+    #instructions {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #aaa;
+      text-align: center;
+      line-height: 1.6;
+    }
+    #gameOver {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.9);
+      padding: 40px 60px;
+      border: 2px solid #ffcc00;
+      border-radius: 10px;
+      text-align: center;
+      display: none;
+    }
+    #gameOver h2 {
+      color: #ff4444;
+      margin-bottom: 20px;
+      font-size: 36px;
+    }
+    #gameOver p {
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+    #gameOver button {
+      padding: 12px 30px;
+      font-size: 18px;
+      background: #ffcc00;
+      color: #1a1a1a;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #gameOver button:hover {
+      background: #ffdd33;
+    }
+  </style>
+</head>
+<body>
+  <h1>坦克大战 TANK BATTLE</h1>
+  <div id="gameInfo">
+    <div>生命: <span id="health">100</span></div>
+    <div>得分: <span id="score">0</span></div>
+    <div>波次: <span id="wave">1</span></div>
+  </div>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <div id="instructions">
+    <strong>操作说明：</strong>WASD 移动坦克 | 鼠标瞄准 | 左键/空格 射击 | 消灭敌人获得分数
+  </div>
+  <div id="gameOver">
+    <h2>游戏结束</h2>
+    <p>最终得分: <span id="finalScore">0</span></p>
+    <button onclick="restartGame()">重新开始</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Game state
+    let gameRunning = true;
+    let score = 0;
+    let wave = 1;
+    let lastTime = 0;
+    let enemySpawnTimer = 0;
+    let enemySpawnInterval = 2500;
+
+    // Input state
+    const keys = {};
+    let mouseX = 0;
+    let mouseY = 0;
+
+    // Audio context for simple sound effects
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+
+    function playSound(frequency, duration, type = 'square') {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = frequency;
+      osc.type = type;
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + duration);
+    }
+
+    // Utility functions
+    function distance(a, b) {
+      return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    }
+
+    function angleBetween(a, b) {
+      return Math.atan2(b.y - a.y, b.x - a.x);
+    }
+
+    function rectIntersect(r1, r2) {
+      return r1.x < r2.x + r2.width &&
+             r1.x + r1.width > r2.x &&
+             r1.y < r2.y + r2.height &&
+             r1.y + r1.height > r2.y;
+    }
+
+    // Map walls
+    const walls = [
+      { x: 150, y: 150, width: 100, height: 20 },
+      { x: 550, y: 150, width: 100, height: 20 },
+      { x: 150, y: 430, width: 100, height: 20 },
+      { x: 550, y: 430, width: 100, height: 20 },
+      { x: 350, y: 250, width: 100, height: 20 },
+      { x: 350, y: 330, width: 100, height: 20 },
+      { x: 50, y: 280, width: 20, height: 80 },
+      { x: 730, y: 280, width: 20, height: 80 }
+    ];
+
+    function checkWallCollision(x, y, width, height) {
+      for (const wall of walls) {
+        if (rectIntersect({ x, y, width, height }, wall)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function keepInBounds(entity) {
+      entity.x = Math.max(entity.width / 2, Math.min(canvas.width - entity.width / 2, entity.x));
+      entity.y = Math.max(entity.height / 2, Math.min(canvas.height - entity.height / 2, entity.y));
+    }
+
+    // Tank class
+    class Tank {
+      constructor(x, y, color, isPlayer = false) {
+        this.x = x;
+        this.y = y;
+        this.width = 36;
+        this.height = 36;
+        this.color = color;
+        this.angle = 0;
+        this.speed = isPlayer ? 3.5 : 1.8 + wave * 0.15;
+        this.isPlayer = isPlayer;
+        this.health = isPlayer ? 100 : 30 + wave * 5;
+        this.maxHealth = this.health;
+        this.cooldown = 0;
+        this.fireRate = isPlayer ? 250 : 1200;
+        this.lastShot = 0;
+      }
+
+      update(dt) {
+        if (this.cooldown > 0) this.cooldown -= dt;
+
+        const halfW = this.width / 2;
+        const halfH = this.height / 2;
+
+        if (this.isPlayer) {
+          let dx = 0;
+          let dy = 0;
+          if (keys['w'] || keys['arrowup']) dy -= 1;
+          if (keys['s'] || keys['arrowdown']) dy += 1;
+          if (keys['a'] || keys['arrowleft']) dx -= 1;
+          if (keys['d'] || keys['arrowright']) dx += 1;
+
+          if (dx !== 0 || dy !== 0) {
+            const len = Math.sqrt(dx * dx + dy * dy);
+            dx /= len;
+            dy /= len;
+            const newX = this.x + dx * this.speed;
+            const newY = this.y + dy * this.speed;
+            if (!checkWallCollision(newX - halfW, this.y - halfH, this.width, this.height)) {
+              this.x = newX;
+            }
+            if (!checkWallCollision(this.x - halfW, newY - halfH, this.width, this.height)) {
+              this.y = newY;
+            }
+          }
+
+          this.angle = angleBetween({ x: this.x, y: this.y }, { x: mouseX, y: mouseY });
+        } else {
+          // Enemy AI: chase player
+          const targetAngle = angleBetween(this, player);
+          this.angle = targetAngle;
+
+          const dx = Math.cos(targetAngle);
+          const dy = Math.sin(targetAngle);
+          const newX = this.x + dx * this.speed;
+          const newY = this.y + dy * this.speed;
+
+          if (!checkWallCollision(newX - halfW, this.y - halfH, this.width, this.height)) {
+            this.x = newX;
+          }
+          if (!checkWallCollision(this.x - halfW, newY - halfH, this.width, this.height)) {
+            this.y = newY;
+          }
+        }
+
+        keepInBounds(this);
+      }
+
+      canShoot() {
+        return Date.now() - this.lastShot > this.fireRate;
+      }
+
+      shoot() {
+        if (!this.canShoot()) return;
+        this.lastShot = Date.now();
+        const muzzleLen = 28;
+        const bx = this.x + Math.cos(this.angle) * muzzleLen;
+        const by = this.y + Math.sin(this.angle) * muzzleLen;
+        const speed = this.isPlayer ? 8 : 5;
+        bullets.push(new Bullet(bx, by, this.angle, this.isPlayer, speed));
+        playSound(this.isPlayer ? 200 : 120, 0.1);
+      }
+
+      takeDamage(amount) {
+        this.health -= amount;
+        if (this.health <= 0 && !this.isPlayer) {
+          score += 10;
+          updateUI();
+        }
+      }
+
+      draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+
+        // Body
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+
+        // Tracks
+        ctx.fillStyle = '#222';
+        ctx.fillRect(-this.width / 2 - 4, -this.height / 2 + 2, 4, this.height - 4);
+        ctx.fillRect(this.width / 2, -this.height / 2 + 2, 4, this.height - 4);
+
+        // Turret
+        ctx.fillStyle = this.isPlayer ? '#ffcc00' : '#ff6666';
+        ctx.beginPath();
+        ctx.arc(0, 0, 10, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Barrel
+        ctx.fillStyle = '#555';
+        ctx.fillRect(0, -4, 28, 8);
+
+        ctx.restore();
+
+        // Health bar
+        const barWidth = 30;
+        const barHeight = 4;
+        const hpPercent = Math.max(0, this.health / this.maxHealth);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(this.x - barWidth / 2, this.y - this.height / 2 - 12, barWidth, barHeight);
+        ctx.fillStyle = hpPercent > 0.5 ? '#00ff88' : hpPercent > 0.25 ? '#ffcc00' : '#ff4444';
+        ctx.fillRect(this.x - barWidth / 2, this.y - this.height / 2 - 12, barWidth * hpPercent, barHeight);
+      }
+    }
+
+    // Bullet class
+    class Bullet {
+      constructor(x, y, angle, isPlayer, speed) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle;
+        this.speed = speed;
+        this.isPlayer = isPlayer;
+        this.radius = 4;
+        this.active = true;
+      }
+
+      update() {
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) {
+          this.active = false;
+        }
+
+        for (const wall of walls) {
+          if (rectIntersect(
+            { x: this.x - this.radius, y: this.y - this.radius, width: this.radius * 2, height: this.radius * 2 },
+            wall
+          )) {
+            this.active = false;
+            break;
+          }
+        }
+      }
+
+      draw() {
+        ctx.fillStyle = this.isPlayer ? '#00ffff' : '#ff8800';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Particle effect
+    class Particle {
+      constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.angle = Math.random() * Math.PI * 2;
+        this.speed = Math.random() * 3 + 1;
+        this.life = 1.0;
+        this.decay = Math.random() * 0.03 + 0.02;
+      }
+
+      update() {
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+        this.life -= this.decay;
+      }
+
+      draw() {
+        ctx.globalAlpha = Math.max(0, this.life);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - 2, this.y - 2, 4, 4);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    let player;
+    let enemies = [];
+    let bullets = [];
+    let particles = [];
+
+    function initGame() {
+      player = new Tank(400, 300, '#4CAF50', true);
+      enemies = [];
+      bullets = [];
+      particles = [];
+      score = 0;
+      wave = 1;
+      enemySpawnInterval = 2500;
+      gameRunning = true;
+      document.getElementById('gameOver').style.display = 'none';
+      updateUI();
+    }
+
+    function spawnEnemy() {
+      const edge = Math.floor(Math.random() * 4);
+      let x, y;
+      switch (edge) {
+        case 0: x = Math.random() * canvas.width; y = -30; break;
+        case 1: x = canvas.width + 30; y = Math.random() * canvas.height; break;
+        case 2: x = Math.random() * canvas.width; y = canvas.height + 30; break;
+        default: x = -30; y = Math.random() * canvas.height; break;
+      }
+      enemies.push(new Tank(x, y, '#f44336'));
+    }
+
+    function createExplosion(x, y, color = '#ff8800') {
+      for (let i = 0; i < 12; i++) {
+        particles.push(new Particle(x, y, color));
+      }
+    }
+
+    function updateUI() {
+      document.getElementById('health').textContent = Math.max(0, player.health);
+      document.getElementById('score').textContent = score;
+      document.getElementById('wave').textContent = wave;
+    }
+
+    function gameOver() {
+      gameRunning = false;
+      document.getElementById('finalScore').textContent = score;
+      document.getElementById('gameOver').style.display = 'block';
+    }
+
+    function restartGame() {
+      initGame();
+    }
+
+    // Input handlers
+    window.addEventListener('keydown', (e) => {
+      keys[e.key.toLowerCase()] = true;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (gameRunning) player.shoot();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseX = e.clientX - rect.left;
+      mouseY = e.clientY - rect.top;
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (gameRunning && e.button === 0) player.shoot();
+    });
+
+    // Main game loop
+    function gameLoop(timestamp) {
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+
+      if (gameRunning) {
+        // Update player
+        player.update(dt);
+
+        // Update enemies
+        enemies.forEach(enemy => enemy.update(dt));
+
+        // Enemy shooting AI
+        enemies.forEach(enemy => {
+          const distToPlayer = distance(enemy, player);
+          const hasLineOfSight = !checkWallCollision(
+            Math.min(enemy.x, player.x), Math.min(enemy.y, player.y),
+            Math.abs(enemy.x - player.x), Math.abs(enemy.y - player.y)
+          );
+          // Simple line of sight check using bounding box; acceptable for this arcade game
+          if (distToPlayer < 350 && Math.random() < 0.02 && hasLineOfSight) {
+            enemy.shoot();
+          }
+        });
+
+        // Update bullets
+        bullets.forEach(bullet => bullet.update());
+        bullets = bullets.filter(b => b.active);
+
+        // Update particles
+        particles.forEach(p => p.update());
+        particles = particles.filter(p => p.life > 0);
+
+        // Bullet collisions
+        bullets.forEach(bullet => {
+          if (!bullet.active) return;
+
+          if (bullet.isPlayer) {
+            enemies.forEach(enemy => {
+              if (!bullet.active) return;
+              if (distance(bullet, enemy) < enemy.width / 2) {
+                enemy.takeDamage(15);
+                bullet.active = false;
+                if (enemy.health <= 0) {
+                  createExplosion(enemy.x, enemy.y, '#ff4444');
+                  playSound(80, 0.2);
+                }
+              }
+            });
+          } else {
+            if (distance(bullet, player) < player.width / 2) {
+              player.takeDamage(10);
+              bullet.active = false;
+              createExplosion(player.x, player.y, '#00ffff');
+              playSound(60, 0.15);
+              updateUI();
+              if (player.health <= 0) {
+                createExplosion(player.x, player.y, '#4CAF50');
+                gameOver();
+              }
+            }
+          }
+        });
+
+        // Remove dead enemies
+        enemies = enemies.filter(enemy => enemy.health > 0);
+
+        // Tank-to-tank collision
+        enemies.forEach(enemy => {
+          if (distance(player, enemy) < (player.width + enemy.width) / 2) {
+            const angle = angleBetween(enemy, player);
+            const push = (player.width + enemy.width) / 2 - distance(player, enemy);
+            player.x += Math.cos(angle) * push * 0.5;
+            player.y += Math.sin(angle) * push * 0.5;
+            enemy.x -= Math.cos(angle) * push * 0.5;
+            enemy.y -= Math.sin(angle) * push * 0.5;
+          }
+        });
+
+        // Spawn enemies
+        enemySpawnTimer += dt;
+        if (enemySpawnTimer > enemySpawnInterval) {
+          spawnEnemy();
+          enemySpawnTimer = 0;
+          if (enemySpawnInterval > 600) enemySpawnInterval -= 30;
+        }
+
+        // Increase wave based on score
+        wave = 1 + Math.floor(score / 50);
+      }
+
+      // Draw everything
+      ctx.fillStyle = '#0d0d0d';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw grid
+      ctx.strokeStyle = '#1a1a1a';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= canvas.width; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      // Draw walls
+      ctx.fillStyle = '#666';
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 2;
+      walls.forEach(wall => {
+        ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
+        ctx.strokeRect(wall.x, wall.y, wall.width, wall.height);
+      });
+
+      particles.forEach(p => p.draw());
+      bullets.forEach(b => b.draw());
+      if (gameRunning || player.health > 0) player.draw();
+      enemies.forEach(e => e.draw());
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    initGame();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
